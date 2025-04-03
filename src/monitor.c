@@ -24,7 +24,7 @@ void escribir_log(const char *mensaje) {
     time_t now = time(NULL);
     struct tm *t = localtime(&now);
     char timestamp[20];
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", t);
+    strftime(timestamp, sizeof(timestamp), "%d-%m-%Y %H:%M:%S", t);
     fprintf(log_file, "[%s] %s\n", timestamp, mensaje);
     fclose(log_file);
 }
