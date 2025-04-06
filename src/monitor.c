@@ -42,7 +42,7 @@ static int numTransferencias = 0;
 #define ALERT_PIPE "/tmp/alertas"
 
 int main() {
-    Config config = leer_configuracion(CONFIG_FILE);
+    Config config = leerConfiguracion(CONFIG_FILE);
 
     // Se crea (o accede) a una cola de mensajes que usará el proceso usuario para enviar 
     // información sobre cada operación al monitor
@@ -147,7 +147,7 @@ int main() {
         // al mismo tiempo
         // Si el contador es mayor a 1, se lanza una alerta
         if (msg.operacion == 1 || msg.operacion == 2 || msg.operacion == 3) {
-            int idx = indice_cuenta(msg.numero_cuenta);
+            int idx = indiceCuenta(msg.numero_cuenta);
             if (idx >= 0 && idx < NUM_CUENTAS) {
                 cuentasEnUso[idx]++;
                 if (cuentasEnUso[idx] > 1) {
