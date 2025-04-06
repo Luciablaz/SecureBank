@@ -64,7 +64,7 @@ int main(int argc, char *argv[]) {
 
     int opcion;
     while (1) {
-        mostrar_menu_usuario();  
+        mostrarMenuUsuario();  
         if (scanf("%d", &opcion) != 1)
             break;
         if (opcion == 5)
@@ -109,7 +109,7 @@ int main(int argc, char *argv[]) {
 
         // Solo se permite una operación activa a la vez por hilo. Espera a que finalice para continuar
         pthread_t hilo;
-        if (pthread_create(&hilo, NULL, procesar_operacion_usuario, data) != 0) {
+        if (pthread_create(&hilo, NULL, procesarOperacionUsuario, data) != 0) {
             perror("Error creando hilo para operación.");
             sem_post(&sem_hilos);
             free(data);
