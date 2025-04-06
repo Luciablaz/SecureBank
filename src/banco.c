@@ -41,7 +41,7 @@ void inicializar_semaforo_wrapper() {
 
 void mostrar_menu_principal() {
     printf("\n=====================================\n");
-    printf("¡Bienvenid@ a SecureBank!\n");
+    printf("\u00a1Bienvenid@ a SecureBank!\n");
     printf("Seleccione el usuario para iniciar sesión:\n");
     printf("  1. Usuario nº1\n");
     printf("  2. Usuario nº2\n");
@@ -52,7 +52,6 @@ void mostrar_menu_principal() {
     printf("Ingrese opción: ");
 }
 
-// Hilo que escucha la tubería de alertas y muestra los mensajes en la terminal del padre
 void *alert_listener(void *arg) {
     (void)arg;
     int fd_alert = open(ALERT_PIPE, O_RDONLY);
@@ -91,16 +90,16 @@ void *procesar_operacion(void *arg) {
         free(fifo_path);
         pthread_exit(NULL);
     }
+
     while (read(fd, &op, sizeof(op)) > 0) {
         sem_wait(semaforo);
-        // Abrimos archivo de cuentas
+
         FILE *archivo = fopen(configuracion.archivo_cuentas, "rb+");
         if (!archivo) {
             perror("Error al abrir archivo de cuentas.");
             continue;
         }
 
-        // Buscamos la cuenta origen
         Cuenta cuenta;
         int encontrado = 0;
         while (fread(&cuenta, sizeof(Cuenta), 1, archivo) == 1) {
@@ -109,7 +108,7 @@ void *procesar_operacion(void *arg) {
                 break;
             }
         }
-        // Mensaje resultado para enviar al usuario
+
         char resultado[256] = "";
 
         if (!encontrado) {
@@ -118,14 +117,13 @@ void *procesar_operacion(void *arg) {
             fclose(archivo);
         } else {
             switch (op.tipo) {
-                case 1: { // Depósito
+                case 1:
                     cuenta.saldo += op.monto;
                     snprintf(resultado, sizeof(resultado),
                              "Depósito realizado. Nuevo saldo de la cuenta %d: %.2f €\n",
                              cuenta.numero_cuenta, cuenta.saldo);
                     break;
-                }
-                case 2: { // Retiro
+                case 2:
                     if (op.monto <= cuenta.saldo) {
                         cuenta.saldo -= op.monto;
                         snprintf(resultado, sizeof(resultado),
@@ -137,20 +135,17 @@ void *procesar_operacion(void *arg) {
                                  cuenta.numero_cuenta);
                     }
                     break;
-                }
-                case 3: { // Transferencia
+                case 3:
                     if (op.monto > cuenta.saldo) {
                         snprintf(resultado, sizeof(resultado),
                                  "No hay suficiente saldo para transferir desde la cuenta %d.\n",
                                  op.numero_cuenta);
                         break;
                     }
-                    // Descontar monto en origen
                     cuenta.saldo -= op.monto;
                     fseek(archivo, -sizeof(Cuenta), SEEK_CUR);
                     fwrite(&cuenta, sizeof(Cuenta), 1, archivo);
 
-                    // Buscar cuenta destino
                     int destinoEncontrado = 0;
                     Cuenta cuentaDestino;
                     rewind(archivo);
@@ -165,7 +160,6 @@ void *procesar_operacion(void *arg) {
                                  "Cuenta destino %d no encontrada.\n", op.cuenta_destino);
                         break;
                     }
-                    // Sumar monto a la cuenta destino
                     cuentaDestino.saldo += op.monto;
                     fseek(archivo, -sizeof(Cuenta), SEEK_CUR);
                     fwrite(&cuentaDestino, sizeof(Cuenta), 1, archivo);
@@ -174,30 +168,26 @@ void *procesar_operacion(void *arg) {
                              "Transferencia realizada de %.2f € desde la cuenta %d a la cuenta %d\n",
                              op.monto, op.numero_cuenta, op.cuenta_destino);
                     break;
-                }
-                case 4: { // Consulta de saldo
+                case 4:
                     snprintf(resultado, sizeof(resultado),
                              "Saldo actual de la cuenta %d: %.2f €\n",
                              cuenta.numero_cuenta, cuenta.saldo);
                     break;
-                }
                 default:
                     snprintf(resultado, sizeof(resultado),
                              "Operación no reconocida.\n");
                     break;
             }
-            // Guardamos los cambios en la cuenta origen si no era consulta
+
             if (op.tipo != 3 && op.tipo != 4) {
-                // Si no fue transferencia o consulta, estamos al final del registro de la cuenta
                 fseek(archivo, -sizeof(Cuenta), SEEK_CUR);
                 fwrite(&cuenta, sizeof(Cuenta), 1, archivo);
             }
+
             fclose(archivo);
             sem_post(semaforo);
         }
 
-        // Registrar la operación en el log
-        // Registrar la operación en el log
         FILE *logFile = fopen(configuracion.archivo_log, "a");
         if (logFile) {
             time_t now = time(NULL);
@@ -206,30 +196,28 @@ void *procesar_operacion(void *arg) {
             strftime(timeStr, sizeof(timeStr), "[%d-%m-%Y %H:%M:%S]", t);
 
             switch (op.tipo) {
-            case 1: // Depósito
-                fprintf(logFile, "%s Depósito en la cuenta número %d de %.2f\n",
-                    timeStr, op.numero_cuenta, op.monto);
-                break;
-            case 2: // Retiro
-                fprintf(logFile, "%s Retiro en la cuenta número %d de %.2f\n",
-                    timeStr, op.numero_cuenta, op.monto);
-                break;
-            case 3: // Transferencia
-                fprintf(logFile, "%s Transferencia de %.2f desde la cuenta número %d a la número %d\n",
-                    timeStr, op.monto, op.numero_cuenta, op.cuenta_destino);
-                break;
-            case 4: // Consulta
-                fprintf(logFile, "%s Consulta de saldo en la cuenta número %d\n",
-                    timeStr, op.numero_cuenta);
-                break;
-            default:
-                break;
+                case 1:
+                    fprintf(logFile, "%s Depósito en la cuenta número %d de %.2f\n",
+                            timeStr, op.numero_cuenta, op.monto);
+                    break;
+                case 2:
+                    fprintf(logFile, "%s Retiro en la cuenta número %d de %.2f\n",
+                            timeStr, op.numero_cuenta, op.monto);
+                    break;
+                case 3:
+                    fprintf(logFile, "%s Transferencia de %.2f desde la cuenta número %d a la número %d\n",
+                            timeStr, op.monto, op.numero_cuenta, op.cuenta_destino);
+                    break;
+                case 4:
+                    fprintf(logFile, "%s Consulta de saldo en la cuenta número %d\n",
+                            timeStr, op.numero_cuenta);
+                    break;
+                default:
+                    break;
             }
-
-        fclose(logFile);
+            fclose(logFile);
         }
 
-        // Enviar el resultado al usuario, si hay FIFO de respuesta
         if (strlen(op.respuesta) > 0) {
             int fd_resp = open(op.respuesta, O_WRONLY);
             if (fd_resp != -1) {
@@ -238,6 +226,7 @@ void *procesar_operacion(void *arg) {
             }
         }
     }
+
     close(fd);
     free(fifo_path);
     pthread_exit(NULL);
@@ -248,7 +237,13 @@ int main() {
     configuracion = leer_configuracion(CONFIG_FILE);
     inicializar_semaforo_wrapper();
 
-    mkfifo(ALERT_PIPE, 0666); // Tubería de alertas
+    for (int i = 1; i <= MAX_USUARIOS; i++) {
+        char path[100];
+        snprintf(path, sizeof(path), "/tmp/pipe_usuario_%d", i);
+        unlink(path);
+    }
+
+    mkfifo(ALERT_PIPE, 0666);
     pthread_t hilo_alertas;
     if (pthread_create(&hilo_alertas, NULL, alert_listener, NULL) != 0) {
         perror("Error creando hilo de alertas.");
@@ -265,7 +260,7 @@ int main() {
             break;
 
         int userId = atoi(opcion_str);
-        if (userId < 1 || userId > 5) {
+        if (userId < 1 || userId > MAX_USUARIOS) {
             printf("Opción inválida.\n");
             continue;
         }
@@ -276,21 +271,19 @@ int main() {
             printf("El usuario %d ya está conectado.\n", userId);
             continue;
         }
+
         if (mkfifo(fifo_path, 0666) != 0) {
             perror("Error al crear FIFO.");
             continue;
         }
 
-        // Abrir terminal para el usuario
         pid_t pid = fork();
         if (pid == 0) {
-            //execlp("gnome-terminal", "gnome-terminal", "--", "./bin/usuario", fifo_path, NULL);
-            execlp("dbus-launch", "dbus-launch", "gnome-terminal", "--", "./bin/usuario", fifo_path, NULL);
-            perror("Error al abrir nueva terminal.");
+            execlp("gnome-terminal", "gnome-terminal", "--", "./bin/usuario", fifo_path, NULL);
+            perror("Error al abrir nueva terminal");
             exit(EXIT_FAILURE);
         }
 
-        // Crear hilo para procesar la FIFO del usuario
         sem_wait(semaforo);
         pthread_t hilo;
         char *fifo_path_copia = strdup(fifo_path);
@@ -302,5 +295,6 @@ int main() {
         pthread_detach(hilo);
         sem_post(semaforo);
     }
+
     return 0;
 }
