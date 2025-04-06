@@ -284,8 +284,8 @@ int main() {
         // Abrir terminal para el usuario
         pid_t pid = fork();
         if (pid == 0) {
-            execlp("gnome-terminal", "gnome-terminal", "--", "./bin/usuario", fifo_path, NULL);
-            //execlp("dbus-launch", "dbus-launch", "gnome-terminal", "--", "./bin/usuario", fifo_path, NULL);
+            //execlp("gnome-terminal", "gnome-terminal", "--", "./bin/usuario", fifo_path, NULL);
+            execlp("dbus-launch", "dbus-launch", "gnome-terminal", "--", "./bin/usuario", fifo_path, NULL);
             perror("Error al abrir nueva terminal.");
             exit(EXIT_FAILURE);
         }
