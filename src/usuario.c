@@ -3,17 +3,31 @@
 #include <unistd.h>
 #include <string.h>
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include "../include/mensaje.h"
+#include "../include/config.h"
 
-// Estructura para enviar la operación al padre
+// Estructura para pasar datos al hilo
 typedef struct {
-    int tipo;
-    int numero_cuenta;
-    float monto;
-    int cuenta_destino;
-} DatosOperacion;
+    char fifo_path[100];
+    DatosOperacion op;
+    char fifo_resp[100];
+} OperacionThreadData;
 
-void mostrar_menu() {
-    printf("\n--- Menú Bancario ---\n");
+static pthread_mutex_t mutex_operacion = PTHREAD_MUTEX_INITIALIZER;
+int global_fd_fifo;
+sem_t sem_hilos;
+
+// Prototipo del hilo
+void *procesar_operacion_usuario(void *arg);
+
+// Función para mostrar el menú
+void mostrar_menu_usuario() {
+    printf("\n--- Menú de operaciones bancarias ---\n");
     printf("1. Depósito\n");
     printf("2. Retiro\n");
     printf("3. Transferencia\n");
@@ -23,73 +37,127 @@ void mostrar_menu() {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 3) {
-        fprintf(stderr, "Uso: %s <usuario_id> <pipe_fd>\n", argv[0]);
-        exit(EXIT_FAILURE);
+    if (argc != 2) {
+        fprintf(stderr, "Uso: %s <fifo_path>\n", argv[0]);
+        return 1;
     }
-    
-    int usuario_id = atoi(argv[1]);
-    int pipe_fd = atoi(argv[2]);
-    
-    printf("Usuario %d conectado. Accediendo al banco...\n", usuario_id);
-    sleep(1);
-    
-    DatosOperacion op;
-    int opcion, cuenta, cuenta_destino;
-    float monto;
-    
+    const char *fifo_path = argv[1];
+    // Extraer el número de usuario desde el path FIFO
+    int user_id = 0;
+    sscanf(fifo_path, "/tmp/pipe_usuario_%d", &user_id);
+
+    printf("\nBienvenido, usuario nº %d. Has accedido correctamente a SecureBank.\n", user_id);
+
+    global_fd_fifo = open(fifo_path, O_WRONLY);
+    if (global_fd_fifo == -1) {
+        perror("Error al abrir FIFO en usuario.");
+        return 1;
+    }
+
+    Config config = leer_configuracion(CONFIG_FILE);
+    sem_init(&sem_hilos, 0, config.num_hilos);
+
+    int opcion;
     while (1) {
-        mostrar_menu();
-        if (scanf("%d", &opcion) != 1) {
-            while(getchar() != '\n');  // Limpiar entrada
-            continue;
-        }
-        if (opcion == 5) {
+        mostrar_menu_usuario();  
+        if (scanf("%d", &opcion) != 1)
             break;
-        }
+        if (opcion == 5)
+            break;
+
+        DatosOperacion op;
+        memset(&op, 0, sizeof(op));
         op.tipo = opcion;
-        
+
         printf("Ingrese número de cuenta: ");
-        if (scanf("%d", &cuenta) != 1) {
-            while(getchar() != '\n');
-            continue;
-        }
-        op.numero_cuenta = cuenta;
-        
+        scanf("%d", &op.numero_cuenta);
+
         if (opcion == 3) {
             printf("Ingrese cuenta destino: ");
-            if (scanf("%d", &cuenta_destino) != 1) {
-                while(getchar() != '\n');
-                continue;
-            }
-            op.cuenta_destino = cuenta_destino;
-        } else {
-            op.cuenta_destino = 0;
+            scanf("%d", &op.cuenta_destino);
         }
-        
+
         if (opcion != 4) {
             printf("Ingrese monto: ");
-            if (scanf("%f", &monto) != 1) {
-                while(getchar() != '\n');
-                continue;
-            }
-            op.monto = monto;
-        } else {
-            op.monto = 0;
+            scanf("%f", &op.monto);
         }
-        
-        int bytes_escritos = write(pipe_fd, &op, sizeof(op));
-        if (bytes_escritos != sizeof(op)) {
-            perror("Error escribiendo en el pipe");
-        } else {
-            // Solo mostramos "Operación enviada" si NO es una consulta (opción 4)
-            if (opcion != 4) {
-                printf("Operación enviada.\n");
-            }
+
+        char fifo_resp[100];
+        snprintf(fifo_resp, sizeof(fifo_resp), "/tmp/respuesta_%d", getpid());
+        if (mkfifo(fifo_resp, 0666) != 0) {
+            perror("Error al crear FIFO de respuesta");
         }
-        sleep(1);  // Simular tiempo de procesamiento
+        strncpy(op.respuesta, fifo_resp, sizeof(op.respuesta));
+
+        OperacionThreadData *data = malloc(sizeof(OperacionThreadData));
+        if (!data) {
+            perror("Error al asignar memoria para la operación.");
+            continue;
+        }
+        strncpy(data->fifo_path, fifo_path, sizeof(data->fifo_path));
+        data->op = op;
+        strncpy(data->fifo_resp, fifo_resp, sizeof(data->fifo_resp));
+
+        sem_wait(&sem_hilos);
+
+        pthread_t hilo;
+        if (pthread_create(&hilo, NULL, procesar_operacion_usuario, data) != 0) {
+            perror("Error creando hilo para operación.");
+            sem_post(&sem_hilos);
+            free(data);
+            continue;
+        }
+
+        pthread_join(hilo, NULL);  // Espera al hilo antes de volver a mostrar el menú
     }
-    
-    close(pipe_fd);
+
+    sem_destroy(&sem_hilos);
+    close(global_fd_fifo);
+    unlink(fifo_path);
     return 0;
+}
+
+void *procesar_operacion_usuario(void *arg) {
+    OperacionThreadData *data = (OperacionThreadData *)arg;
+
+    pthread_mutex_lock(&mutex_operacion);
+    if (write(global_fd_fifo, &data->op, sizeof(DatosOperacion)) == -1) {
+        perror("Error al escribir en FIFO");
+    }
+    pthread_mutex_unlock(&mutex_operacion);
+
+    key_t key = ftok("src/monitor.c", 65);
+    int msgid = msgget(key, 0666 | IPC_CREAT);
+    if (msgid != -1) {
+        MensajeOperacion m;
+        m.tipo = 1;
+        m.operacion = data->op.tipo;
+        m.numero_cuenta = data->op.numero_cuenta;
+        m.cuenta_destino = data->op.cuenta_destino;
+        m.monto = data->op.monto;
+        if (msgsnd(msgid, &m, sizeof(MensajeOperacion) - sizeof(long), 0) == -1) {
+            perror("Error al enviar mensaje al monitor.");
+        }
+    }
+
+    int fd_resp = open(data->fifo_resp, O_RDONLY);
+    if (fd_resp == -1) {
+        perror("Error al abrir FIFO de respuesta en hilo.");
+    } else {
+        char buffer[256];
+        ssize_t n = read(fd_resp, buffer, sizeof(buffer) - 1);
+        if (n > 0) {
+            buffer[n] = '\0';
+            printf("\n>>> %s\n", buffer);  
+            fflush(stdout);
+        } else {
+            perror("Error leyendo FIFO de respuesta.");
+        }
+        close(fd_resp);
+    }
+
+    unlink(data->fifo_resp);
+    free(data);
+    sem_post(&sem_hilos);
+    pthread_exit(NULL);
 }

@@ -10,7 +10,7 @@ void crear_cuentas_iniciales() {
     Config config = leer_configuracion(CONFIG_FILE);
     
     if (access(config.archivo_cuentas, F_OK) == 0) {
-        printf("El archivo de cuentas ya existe. No se sobrescribirá.\n");
+        printf("El archivo de cuentas ya existe.\n");
         return;
     }
 
@@ -23,14 +23,14 @@ void crear_cuentas_iniciales() {
 
     FILE *archivo = fopen(config.archivo_cuentas, "wb");
     if (!archivo) {
-        perror("Error al crear el archivo de cuentas");
+        perror("Error al crear el archivo de cuentas.");
         exit(EXIT_FAILURE);
     }
 
     fwrite(cuentas, sizeof(Cuenta), 4, archivo);
     fclose(archivo);
 
-    printf("Archivo de cuentas creado exitosamente en %s.\n", config.archivo_cuentas);
+    printf("Archivo de cuentas creado exitosamente.\n");
 }
 
 int main() {

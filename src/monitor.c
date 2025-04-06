@@ -1,92 +1,156 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <sys/types.h>
-#include <time.h>
-#include <errno.h>
-#include <fcntl.h>              // ADAPTACIÓN TUBERÍA: incluir para open, etc.
-#include "../include/mensaje.h"  // Si usas el encabezado común
-#include "../include/config.h"    // Para leer la configuración (CONFIG_FILE y la estructura Config)
-#include "../include/banco.h"     // (Opcional, si necesitas CONFIG_FILE definido allí)
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#include "../include/config.h"
+#include "../include/mensaje.h"
 
-#define LOG_FILE "logs/securebank.log"
+#define CUENTA_MIN 1001
+#define CUENTA_MAX 1004
+#define NUM_CUENTAS (CUENTA_MAX - CUENTA_MIN + 1)
 
-void escribir_log(const char *mensaje) {
-    system("mkdir -p logs");
-    
-    FILE *log_file = fopen(LOG_FILE, "a");
-    if (log_file == NULL) {
-        perror("Error al abrir archivo de log");
-        return;
-    }
-
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
-    char timestamp[20];
-    strftime(timestamp, sizeof(timestamp), "%d-%m-%Y %H:%M:%S", t);
-    fprintf(log_file, "[%s] %s\n", timestamp, mensaje);
-    fclose(log_file);
+int indice_cuenta(int cuenta) {
+    return cuenta - CUENTA_MIN;
 }
 
-int main() {
-    // Unificar la clave de la cola
-    int cola_mensajes = msgget(CLAVE_COLA, 0666 | IPC_CREAT);
+static int cuentasEnUso[NUM_CUENTAS] = {0};
 
-    if (cola_mensajes == -1) {
-        perror("Error creando la cola de mensajes");
+#define MAX_TRANSFERENCIAS 100
+typedef struct {
+    int origen;
+    int destino;
+    int contador;
+} TransferInfo;
+
+static TransferInfo transferencias[MAX_TRANSFERENCIAS];
+static int numTransferencias = 0;
+
+#define ALERT_PIPE "/tmp/alertas"
+
+int main() {
+    Config config = leer_configuracion(CONFIG_FILE);
+
+    key_t key = ftok("src/monitor.c", 65);
+    int msgid = msgget(key, 0666 | IPC_CREAT);
+    if (msgid == -1) {
+        perror("Error creando o accediendo a la cola de mensajes.");
         exit(1);
     }
 
-    // Leer la configuración para obtener umbrales y otros parámetros
-    Config config = leer_configuracion(CONFIG_FILE);
-    printf("Monitor: Umbral retiros = %d, Umbral transferencias = %d\n", 
-           config.umbral_retiros, config.umbral_transferencias);
-    
-    escribir_log("Monitor iniciado. Escuchando transacciones...");
-    printf("Monitor iniciado. Escuchando transacciones...\n");
+    //printf("Monitor: Umbral retiros = %d, Umbral transferencias = %d\n", config.umbral_retiros, config.umbral_transferencias);
+    printf("\nMonitor iniciado. Escuchando transacciones...\n");
 
-    // ADAPTACIÓN TUBERÍA: Abrir la tubería para alertas en modo escritura
-    int fd_fifo = open(PIPE_NOMBRE, O_WRONLY);
-    if (fd_fifo < 0) {
-        perror("Error abriendo tubería para alertas en monitor");
-        // Se continúa sin alertas, si lo prefieres.
-    }
+    MensajeOperacion msg;
+    int contador_retiros = 0;
+    int ultima_cuenta = -1;
 
-    // Bucle para recibir mensajes
-    MsgOperacion mensaje;
     while (1) {
-        // msgrcv espera el tamaño de mtext solamente
-        if (msgrcv(cola_mensajes, &mensaje, sizeof(mensaje.texto), 0, 0) == -1) {
-            perror("Error recibiendo mensaje");
+        ssize_t res = msgrcv(msgid, &msg, sizeof(MensajeOperacion) - sizeof(long), 0, 0);
+        if (res == -1) {
+            perror("Error al recibir mensaje.");
             continue;
         }
 
-        // Escribir la transacción recibida en el log
-        char log_msg[150];
-        snprintf(log_msg, sizeof(log_msg), "Transacción recibida: %s", mensaje.texto);
-        escribir_log(log_msg);
-        printf("%s\n", log_msg);
+        switch (msg.operacion) {
+            case 1:
+                printf("Se ha realizado un DEPÓSITO (1) de %.2f en la cuenta número %d\n",
+                       msg.monto, msg.numero_cuenta);
+                break;
+            case 2:
+                printf("Se ha realizado un RETIRO (2) de %.2f en la cuenta número %d\n",
+                       msg.monto, msg.numero_cuenta);
+                break;
+            case 3:
+                printf("Se ha realizado una TRANSFERENCIA (3) de %.2f desde la cuenta número %d a la cuenta número %d\n",
+                       msg.monto, msg.numero_cuenta, msg.cuenta_destino);
+                break;
+            case 4:
+                printf("Se ha realizado una CONSULTA (4) en la cuenta número %d\n",
+                       msg.numero_cuenta);
+                break;
+        }
 
-        // Ejemplo básico de detección de anomalías en retiros
-        if (strstr(mensaje.texto, "RETIRO") != NULL) {
-            int cuenta;
-            float monto;
-            char operacion[20];
-            if (sscanf(mensaje.texto, "%s cuenta %d: %f", operacion, &cuenta, &monto) == 3) {
-                if (monto >= (float)config.limite_retiro) {
-                    char alerta_msg[150];
-                    snprintf(alerta_msg, sizeof(alerta_msg), "ALERTA: Retiro alto detectado en cuenta %d: %.2f", cuenta, monto);
-                    escribir_log(alerta_msg);
-                    printf("%s\n", alerta_msg);
-                    if (fd_fifo >= 0) {
-                        write(fd_fifo, alerta_msg, strlen(alerta_msg));
+        // Retiros sospechosos
+        if (msg.operacion == 2 && msg.monto > config.limite_retiro) {
+            if (msg.numero_cuenta == ultima_cuenta) {
+                contador_retiros++;
+            } else {
+                contador_retiros = 1;
+                ultima_cuenta = msg.numero_cuenta;
+            }
+            if (contador_retiros >= config.umbral_retiros) {
+                char alerta[128];
+                snprintf(alerta, sizeof(alerta),
+                         "Retiros sospechosos consecutivos en cuenta %d\n",
+                         msg.numero_cuenta);
+                printf("ALERTA: %s", alerta);
+                int fd_alert = open(ALERT_PIPE, O_WRONLY);
+                if (fd_alert != -1) {
+                    write(fd_alert, alerta, strlen(alerta));
+                    close(fd_alert);
+                }
+                contador_retiros = 0;
+            }
+        } else {
+            contador_retiros = 0;
+        }
+
+        // Transferencias repetidas
+        if (msg.operacion == 3) {
+            int found = 0;
+            for (int i = 0; i < numTransferencias; i++) {
+                if (transferencias[i].origen == msg.numero_cuenta &&
+                    transferencias[i].destino == msg.cuenta_destino) {
+                    transferencias[i].contador++;
+                    if (transferencias[i].contador >= config.umbral_transferencias) {
+                        char alerta[128];
+                        snprintf(alerta, sizeof(alerta),
+                                 "Transferencias repetidas entre cuentas %d y %d\n",
+                                 msg.numero_cuenta, msg.cuenta_destino);
+                        printf("ALERTA: %s", alerta);
+                        int fd_alert = open(ALERT_PIPE, O_WRONLY);
+                        if (fd_alert != -1) {
+                            write(fd_alert, alerta, strlen(alerta));
+                            close(fd_alert);
+                        }
+                        transferencias[i].contador = 0;
+                    }
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found && numTransferencias < MAX_TRANSFERENCIAS) {
+                transferencias[numTransferencias].origen = msg.numero_cuenta;
+                transferencias[numTransferencias].destino = msg.cuenta_destino;
+                transferencias[numTransferencias].contador = 1;
+                numTransferencias++;
+            }
+        }
+
+        // Uso simultáneo simple
+        if (msg.operacion == 1 || msg.operacion == 2 || msg.operacion == 3) {
+            int idx = indice_cuenta(msg.numero_cuenta);
+            if (idx >= 0 && idx < NUM_CUENTAS) {
+                cuentasEnUso[idx]++;
+                if (cuentasEnUso[idx] > 1) {
+                    char alerta[128];
+                    snprintf(alerta, sizeof(alerta),
+                             "Uso simultáneo de la cuenta %d\n", msg.numero_cuenta);
+                    printf("ALERTA: %s", alerta);
+                    int fd_alert = open(ALERT_PIPE, O_WRONLY);
+                    if (fd_alert != -1) {
+                        write(fd_alert, alerta, strlen(alerta));
+                        close(fd_alert);
                     }
                 }
+                cuentasEnUso[idx]--;
             }
         }
     }
-    // Si por alguna razón salimos del bucle, cerrar la tubería
-    close(fd_fifo);
     return 0;
 }

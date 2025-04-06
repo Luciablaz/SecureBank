@@ -1,15 +1,22 @@
 #ifndef MENSAJE_H
 #define MENSAJE_H
 
-#include <sys/ipc.h>
-#include <sys/msg.h>
+// Estructura para comunicación por FIFO
+typedef struct {
+    int tipo;             // 1=depósito, 2=retiro, 3=transferencia, 4=consulta
+    int numero_cuenta;
+    int cuenta_destino;
+    float monto;
+    char respuesta[100];  // FIFO de respuesta para imprimir en la terminal del usuario
+} DatosOperacion;
 
-#define CLAVE_COLA 1234  // Clave fija para la cola de mensajes
-
-// Estructura para enviar mensajes (transacciones)
+// Estructura para la cola de mensajes con "long" tipo obligatorio
 typedef struct {
     long tipo;
-    char texto[100];
-} MsgOperacion;
+    int operacion;
+    int numero_cuenta;
+    int cuenta_destino;
+    float monto;
+} MensajeOperacion;
 
 #endif
