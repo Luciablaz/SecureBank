@@ -5,21 +5,29 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <sys/types.h>
+// Generación de claves únicas para IPC (ftok)
 #include <sys/ipc.h>
+// Uso de colas de mensajes: msgget, msgsnd, msgrcv...
 #include <sys/msg.h>
 #include "../include/config.h"
 #include "../include/mensaje.h"
 
+// Definición de rango de cuentas disponibles para el sistema
 #define CUENTA_MIN 1001
 #define CUENTA_MAX 1004
 #define NUM_CUENTAS (CUENTA_MAX - CUENTA_MIN + 1)
 
-int indice_cuenta(int cuenta) {
+// Convierte el número de cuenta en un índice de array comenzando desde 0
+int indiceCuenta(int cuenta) {
     return cuenta - CUENTA_MIN;
 }
 
+// Array para detectar si una misma cuenta está siendo utilizada por más 
+// de un proceso al mismo tiempo
 static int cuentasEnUso[NUM_CUENTAS] = {0};
 
+// Estructura y almacenamiento de transferencias repetidas
+// Se usa para detectar múltiples transferencias entre las mismas cuentas
 #define MAX_TRANSFERENCIAS 100
 typedef struct {
     int origen;
@@ -30,11 +38,14 @@ typedef struct {
 static TransferInfo transferencias[MAX_TRANSFERENCIAS];
 static int numTransferencias = 0;
 
+// Ruta de la FIFO que se usa para enviar alertas al proceso banco
 #define ALERT_PIPE "/tmp/alertas"
 
 int main() {
     Config config = leer_configuracion(CONFIG_FILE);
 
+    // Se crea (o accede) a una cola de mensajes que usará el proceso usuario para enviar 
+    // información sobre cada operación al monitor
     key_t key = ftok("src/monitor.c", 65);
     int msgid = msgget(key, 0666 | IPC_CREAT);
     if (msgid == -1) {
@@ -42,7 +53,6 @@ int main() {
         exit(1);
     }
 
-    //printf("Monitor: Umbral retiros = %d, Umbral transferencias = %d\n", config.umbral_retiros, config.umbral_transferencias);
     printf("\nMonitor iniciado. Escuchando transacciones...\n");
 
     MensajeOperacion msg;
@@ -50,12 +60,13 @@ int main() {
     int ultima_cuenta = -1;
 
     while (1) {
+        // Cada mensaje representa una operación realizada por un usuario
         ssize_t res = msgrcv(msgid, &msg, sizeof(MensajeOperacion) - sizeof(long), 0, 0);
         if (res == -1) {
             perror("Error al recibir mensaje.");
             continue;
         }
-
+        // Mensajes de la operacion recibida por la terminal
         switch (msg.operacion) {
             case 1:
                 printf("Se ha realizado un DEPÓSITO (1) de %.2f en la cuenta número %d\n",
@@ -75,7 +86,7 @@ int main() {
                 break;
         }
 
-        // Retiros sospechosos
+        // Detecta múltiples retiros grandes consecutivos de una misma cuenta
         if (msg.operacion == 2 && msg.monto > config.limite_retiro) {
             if (msg.numero_cuenta == ultima_cuenta) {
                 contador_retiros++;
@@ -100,7 +111,7 @@ int main() {
             contador_retiros = 0;
         }
 
-        // Transferencias repetidas
+        // Detecta transferencias repetitivas entre los mismos usuarios
         if (msg.operacion == 3) {
             int found = 0;
             for (int i = 0; i < numTransferencias; i++) {
@@ -132,7 +143,9 @@ int main() {
             }
         }
 
-        // Uso simultáneo simple
+        // Detecta si una misma cuenta está siendo utilizada por más de un usuario 
+        // al mismo tiempo
+        // Si el contador es mayor a 1, se lanza una alerta
         if (msg.operacion == 1 || msg.operacion == 2 || msg.operacion == 3) {
             int idx = indice_cuenta(msg.numero_cuenta);
             if (idx >= 0 && idx < NUM_CUENTAS) {
